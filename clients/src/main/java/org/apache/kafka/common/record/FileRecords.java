@@ -118,7 +118,9 @@ public class FileRecords extends AbstractRecords implements Closeable {
                         throw new UncheckedIOException(e);
                     }
                 }
+
                 reopenChannelIfClosed();
+
                 return channel;
             }
         } else {
