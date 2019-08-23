@@ -118,10 +118,23 @@ public class FileRecords extends AbstractRecords implements Closeable {
                         throw new UncheckedIOException(e);
                     }
                 }
+                reopenChannelIfClosed();
                 return channel;
             }
         } else {
             return channel;
+        }
+    }
+
+
+    private void reopenChannelIfClosed() {
+        if (channel == null) {
+            try {
+                channel = FileChannel.open(file.toPath(), StandardOpenOption.CREATE, StandardOpenOption.READ,
+                    StandardOpenOption.WRITE);
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            }
         }
     }
 
@@ -187,8 +200,16 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * Commit all written data to the physical disk
      */
     public void flush() throws IOException {
-        if (channel != null) {
-            channel.force(true);
+        if(OperatingSystem.IS_WINDOWS){
+            synchronized (mutex){
+                reopenChannelIfClosed();
+            }
+        }else
+        {
+            if (channel != null)
+            {
+                channel.force(true);
+            }
         }
     }
 
