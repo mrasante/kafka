@@ -650,7 +650,7 @@ project(':core') {
 
   apply plugin: 'scala'
   apply plugin: "org.scoverage"
-  archivesBaseName = "kafka_${versions.baseScala}"
+  archivesBaseName = "kafka-esri_${versions.baseScala}"
 
   dependencies {
     compile project(':clients')
@@ -925,7 +925,7 @@ project(':generator') {
 }
 
 project(':clients') {
-  archivesBaseName = "kafka-clients"
+  archivesBaseName = "kafka-clients-esri"
 
   configurations {
     jacksonDatabindConfig
