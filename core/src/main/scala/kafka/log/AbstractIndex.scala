@@ -208,8 +208,10 @@ abstract class AbstractIndex(@volatile private var _file: File, val baseOffset: 
    * @throws IOException if rename fails
    */
   def renameTo(f: File): Unit = {
-    try Utils.atomicMoveWithFallback(file.toPath, f.toPath)
-    finally _file = f
+    maybeUnmap(lock){
+      try Utils.atomicMoveWithFallback(file.toPath, f.toPath)
+      finally _file = f
+    }
   }
 
   /**
@@ -339,6 +341,22 @@ abstract class AbstractIndex(@volatile private var _file: File, val baseOffset: 
     finally {
       if (OperatingSystem.IS_WINDOWS || OperatingSystem.IS_ZOS)
         lock.unlock()
+    }
+  }
+
+  /**
+   * Execute the given function in lock and with unmap/map for Windows. This
+   * is necessary because windows locks files, so for any structural operation on
+   * a file (rename, delete, move), it has to be unmapped first, then remapped.
+   */
+  protected def maybeUnmap[T](lock: Lock)(fun: => T): T = {
+    if (OperatingSystem.IS_WINDOWS) {
+      inLock(lock) {
+        safeForceUnmap();
+        fun
+      }
+    } else {
+      fun;
     }
   }
 
