@@ -22,11 +22,13 @@ import org.apache.kafka.common.record.FileLogInputStream.FileChannelRecordBatch;
 import org.apache.kafka.common.utils.AbstractIterator;
 import org.apache.kafka.common.utils.Time;
 import org.apache.kafka.common.utils.Utils;
+import org.apache.kafka.common.utils.OperatingSystem;
 
 import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
+import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.channels.GatheringByteChannel;
@@ -41,6 +43,7 @@ import java.util.concurrent.atomic.AtomicInteger;
  * instance to enable slicing a range of the log records.
  */
 public class FileRecords extends AbstractRecords implements Closeable {
+    private final Object mutex = new Object();
     private final boolean isSlice;
     private final int start;
     private final int end;
@@ -49,8 +52,8 @@ public class FileRecords extends AbstractRecords implements Closeable {
 
     // mutable state
     private final AtomicInteger size;
-    private final FileChannel channel;
     private volatile File file;
+    private volatile FileChannel channel;
 
     /**
      * The {@code FileRecords.open} methods should be used instead of this constructor whenever possible.
@@ -105,7 +108,34 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * @return The file channel
      */
     public FileChannel channel() {
-        return channel;
+        if (OperatingSystem.IS_WINDOWS) {
+            synchronized (mutex) {
+                if (channel == null) {
+                    try {
+                        channel = FileChannel.open(file.toPath(), StandardOpenOption.CREATE, StandardOpenOption.READ,
+                                StandardOpenOption.WRITE);
+                    } catch (IOException e) {
+                        throw new UncheckedIOException(e);
+                    }
+                }
+                reopenChannelIfClosed();
+                return channel;
+            }
+        } else {
+            return channel;
+        }
+    }
+
+
+    private void reopenChannelIfClosed() {
+        if (channel == null) {
+            try {
+                channel = FileChannel.open(file.toPath(), StandardOpenOption.CREATE, StandardOpenOption.READ,
+                    StandardOpenOption.WRITE);
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            }
+        }
     }
 
     /**
@@ -118,7 +148,7 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * possible exceptions
      */
     public void readInto(ByteBuffer buffer, int position) throws IOException {
-        Utils.readFully(channel, buffer, position + this.start);
+        Utils.readFully(channel(), buffer, position + this.start);
         buffer.flip();
     }
 
@@ -149,7 +179,7 @@ public class FileRecords extends AbstractRecords implements Closeable {
         // handle integer overflow or if end is beyond the end of the file
         if (end < 0 || end > start + currentSizeInBytes)
             end = start + currentSizeInBytes;
-        return new FileRecords(file, channel, this.start + position, end, true);
+        return new FileRecords(file, channel(), this.start + position, end, true);
     }
 
     /**
@@ -164,7 +194,7 @@ public class FileRecords extends AbstractRecords implements Closeable {
             throw new IllegalArgumentException("Append of size " + records.sizeInBytes() +
                     " bytes is too large for segment with current file position at " + size.get());
 
-        int written = records.writeFullyTo(channel);
+        int written = records.writeFullyTo(channel());
         size.getAndAdd(written);
         return written;
     }
@@ -173,7 +203,17 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * Commit all written data to the physical disk
      */
     public void flush() throws IOException {
-        channel.force(true);
+        if(OperatingSystem.IS_WINDOWS){
+            synchronized (mutex){
+                reopenChannelIfClosed();
+            }
+        }else
+        {
+            if (channel != null)
+            {
+                channel.force(true);
+            }
+        }
     }
 
     /**
@@ -182,14 +222,18 @@ public class FileRecords extends AbstractRecords implements Closeable {
     public void close() throws IOException {
         flush();
         trim();
-        channel.close();
+        if (channel != null) {
+            channel.close();
+        }
     }
 
     /**
      * Close file handlers used by the FileChannel but don't write to disk. This is used when the disk may have failed
      */
     public void closeHandlers() throws IOException {
-        channel.close();
+        if (channel != null) {
+            channel.close();
+        }
     }
 
     /**
@@ -199,8 +243,19 @@ public class FileRecords extends AbstractRecords implements Closeable {
      *          because it did not exist
      */
     public boolean deleteIfExists() throws IOException {
-        Utils.closeQuietly(channel, "FileChannel");
-        return Files.deleteIfExists(file.toPath());
+        if (OperatingSystem.IS_WINDOWS) {
+            synchronized (mutex) {
+                if (channel != null) {
+                    Utils.closeQuietly(channel, "FileChannel");
+                }
+                return Files.deleteIfExists(file.toPath());
+            }
+        } else {
+            if (channel != null) {
+                Utils.closeQuietly(channel, "FileChannel");
+            }
+            return Files.deleteIfExists(file.toPath());
+        }
     }
 
     /**
@@ -223,10 +278,25 @@ public class FileRecords extends AbstractRecords implements Closeable {
      * @throws IOException if rename fails.
      */
     public void renameTo(File f) throws IOException {
-        try {
-            Utils.atomicMoveWithFallback(file.toPath(), f.toPath());
-        } finally {
-            this.file = f;
+        if (OperatingSystem.IS_WINDOWS) {
+            synchronized (mutex) {
+                try {
+                    close();
+                    try {
+                        Utils.atomicMoveWithFallback(file.toPath(), f.toPath());
+                    } finally {
+                        this.file = f;
+                    }
+                } finally {
+                    channel = null;
+                }
+            }
+        } else {
+            try {
+                Utils.atomicMoveWithFallback(file.toPath(), f.toPath());
+            } finally {
+                this.file = f;
+            }
         }
     }
 
@@ -245,8 +315,8 @@ public class FileRecords extends AbstractRecords implements Closeable {
         if (targetSize > originalSize || targetSize < 0)
             throw new KafkaException("Attempt to truncate log segment " + file + " to " + targetSize + " bytes failed, " +
                     " size of this log segment is " + originalSize + " bytes.");
-        if (targetSize < (int) channel.size()) {
-            channel.truncate(targetSize);
+        if (targetSize < (int) channel().size()) {
+            channel().truncate(targetSize);
             size.set(targetSize);
         }
         return originalSize - targetSize;
@@ -271,7 +341,7 @@ public class FileRecords extends AbstractRecords implements Closeable {
 
     @Override
     public long writeTo(GatheringByteChannel destChannel, long offset, int length) throws IOException {
-        long newSize = Math.min(channel.size(), end) - start;
+        long newSize = Math.min(channel().size(), end) - start;
         int oldSize = sizeInBytes();
         if (newSize < oldSize)
             throw new KafkaException(String.format(
@@ -283,9 +353,9 @@ public class FileRecords extends AbstractRecords implements Closeable {
         final long bytesTransferred;
         if (destChannel instanceof TransportLayer) {
             TransportLayer tl = (TransportLayer) destChannel;
-            bytesTransferred = tl.transferFrom(channel, position, count);
+            bytesTransferred = tl.transferFrom(channel(), position, count);
         } else {
-            bytesTransferred = channel.transferTo(position, count, destChannel);
+            bytesTransferred = channel().transferTo(position, count, destChannel);
         }
         return bytesTransferred;
     }
@@ -458,6 +528,23 @@ public class FileRecords extends AbstractRecords implements Closeable {
         } else {
             return FileChannel.open(file.toPath());
         }
+    }
+
+    @Override
+    public int hashCode() {
+        return file.hashCode();
+    }
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o)
+            return true;
+        if (o == null || getClass() != o.getClass())
+            return false;
+
+        FileRecords that = (FileRecords) o;
+
+        return file.equals(that.file);
     }
 
     public static class LogOffsetPosition {
