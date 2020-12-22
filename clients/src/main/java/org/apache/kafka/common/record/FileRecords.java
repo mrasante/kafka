@@ -110,14 +110,6 @@ public class FileRecords extends AbstractRecords implements Closeable {
     public FileChannel channel() {
         if (OperatingSystem.IS_WINDOWS) {
             synchronized (mutex) {
-                if (channel == null) {
-                    try {
-                        channel = FileChannel.open(file.toPath(), StandardOpenOption.CREATE, StandardOpenOption.READ,
-                                StandardOpenOption.WRITE);
-                    } catch (IOException e) {
-                        throw new UncheckedIOException(e);
-                    }
-                }
                 reopenChannelIfClosed();
                 return channel;
             }
@@ -315,6 +307,13 @@ public class FileRecords extends AbstractRecords implements Closeable {
         if (targetSize > originalSize || targetSize < 0)
             throw new KafkaException("Attempt to truncate log segment " + file + " to " + targetSize + " bytes failed, " +
                     " size of this log segment is " + originalSize + " bytes.");
+        if(OperatingSystem.IS_WINDOWS && !channel.isOpen())
+            try {
+                channel = FileChannel.open(file.toPath(), StandardOpenOption.CREATE, StandardOpenOption.READ,
+                    StandardOpenOption.WRITE);
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            }
         if (targetSize < (int) channel().size()) {
             channel().truncate(targetSize);
             size.set(targetSize);
