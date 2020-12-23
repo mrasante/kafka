@@ -693,7 +693,7 @@ project(':core') {
 
   apply plugin: 'scala'
   apply plugin: "org.scoverage"
-  archivesBaseName = "kafka_${versions.baseScala}"
+  archivesBaseName = "kafka-esri_${versions.baseScala}"
 
   dependencies {
     compile project(':clients')
@@ -868,7 +868,7 @@ project(':core') {
   }
 
   tasks.create(name: "releaseTarGz", dependsOn: configurations.archives.artifacts, type: Tar) {
-    into "kafka_${versions.baseScala}-${version}"
+    into "kafka-esri_${versions.baseScala}-${version}"
     compression = Compression.GZIP
     from(project.file("$rootDir/bin")) { into "bin/" }
     from(project.file("$rootDir/config")) { into "config/" }
@@ -968,7 +968,7 @@ project(':generator') {
 }
 
 project(':clients') {
-  archivesBaseName = "kafka-clients"
+  archivesBaseName = "kafka-clients-esri"
 
   configurations {
     jacksonDatabindConfig
